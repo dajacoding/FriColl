@@ -12,7 +12,6 @@ import {
   useWindowDimensions
 } from 'react-native';
 
-
 // Types
 type Eintrag = {
   id: number;
@@ -34,11 +33,9 @@ type OpenEntryInfo = {
   id: number | null;
 };
 
-
 // Storage Keys
 const STORAGE_KEY_EINTRAEGE = '@zeit_erfassung_eintraege';
 const STORAGE_KEY_SPLITS = '@zeit_erfassung_splits';
-
 
 // Einfache ID-Erzeugung (stabiler als mehrfaches Date.now())
 let NEXT_ID = Date.now();
@@ -46,7 +43,6 @@ const generateId = () => {
   NEXT_ID += 1;
   return NEXT_ID;
 };
-
 
 // Utility Functions
 const getTodayDate = (): string => new Date().toISOString().split('T')[0];
@@ -142,6 +138,64 @@ const getOpenEntryInfo = (eintraege: Eintrag[]): OpenEntryInfo => {
   };
 };
 
+// Minuten seit letztem Ende-Eintrag (in 5er-Schritten)
+const diffFromLastEndInMinutes = (eintraege: Eintrag[]): number => {
+  const finished = eintraege.filter(e => e.ende);
+  if (finished.length === 0) return 0;
+
+  const lastEndEntry = finished.reduce(
+    (acc, e) => (!acc || e.id > acc.id ? e : acc),
+    null as Eintrag | null
+  );
+  if (!lastEndEntry) return 0;
+
+  const [endHour, endMin] = (lastEndEntry.ende || '00:00').split(':').map(Number);
+  const endDate = new Date(lastEndEntry.date + 'T00:00:00');
+  endDate.setHours(endHour, endMin, 0, 0);
+
+  const now = new Date();
+  const diffMs = now.getTime() - endDate.getTime();
+  if (diffMs <= 0) return 0;
+
+  const diffMinutes = Math.floor(diffMs / 60000);
+  return Math.round(diffMinutes / 5) * 5;
+};
+
+// Minuten für laufende Messung (offener Eintrag, in 5er-Schritten)
+const diffForOpenEntryInMinutes = (eintraege: Eintrag[]): number => {
+  const openEntries = eintraege.filter(e => !e.ende);
+  if (openEntries.length === 0) return 0;
+
+  const lastOpen = openEntries.reduce(
+    (acc, e) => (!acc || e.id > acc.id ? e : acc),
+    null as Eintrag | null
+  );
+  if (!lastOpen) return 0;
+
+  const [startHour, startMin] = lastOpen.start.split(':').map(Number);
+  const startDate = new Date(lastOpen.date + 'T00:00:00');
+  startDate.setHours(startHour, startMin, 0, 0);
+
+  const now = new Date();
+  const diffMs = now.getTime() - startDate.getTime();
+  if (diffMs <= 0) return 0;
+
+  const diffMinutes = Math.floor(diffMs / 60000);
+  return Math.round(diffMinutes / 5) * 5;
+};
+
+const formatMinutesToDHm = (totalMinutes: number): string => {
+  if (totalMinutes <= 0) return '0 min';
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  return parts.join(' ');
+};
 
 // Storage Functions
 const saveEintraege = async (eintraege: Eintrag[]) => {
@@ -179,7 +233,6 @@ const loadSplits = async (): Promise<SplitEntry[]> => {
     return [];
   }
 };
-
 
 // Business Logic – ERWEITERT für Split-Logik
 const createEntriesWithOptionalSplit = (base: Eintrag) => {
@@ -237,7 +290,6 @@ const buildBaseFromSplit = (
   };
 };
 
-
 // Components
 type SpoolButtonProps = { label: string; onStep: () => void };
 
@@ -274,7 +326,6 @@ const SpoolButton: React.FC<SpoolButtonProps> = ({ label, onStep }) => {
     </Pressable>
   );
 };
-
 
 type AuswertungProps = { eintraege: Eintrag[]; splits: SplitEntry[] };
 
@@ -394,7 +445,6 @@ const AuswertungView: React.FC<AuswertungProps> = ({ eintraege, splits }) => {
   );
 };
 
-
 // Main App Component
 const App: React.FC = () => {
   const todayDate = getTodayDate();
@@ -408,6 +458,9 @@ const App: React.FC = () => {
   const [splits, setSplits] = useState<SplitEntry[]>([]);
   const [screen, setScreen] = useState<'main' | 'auswertung'>('main');
 
+  const [minutesSinceLastEnd, setMinutesSinceLastEnd] = useState<number>(0);
+  const [minutesCurrentOpen, setMinutesCurrentOpen] = useState<number>(0);
+
   useEffect(() => {
     const loadData = async () => {
       const savedEintraege = await loadEintraege();
@@ -415,9 +468,23 @@ const App: React.FC = () => {
       const sortedEintraege = [...savedEintraege].sort((a, b) => b.id - a.id);
       setEintraege(sortedEintraege);
       setSplits(savedSplits);
+      setMinutesSinceLastEnd(diffFromLastEndInMinutes(sortedEintraege));
+      setMinutesCurrentOpen(diffForOpenEntryInMinutes(sortedEintraege));
     };
     loadData();
   }, []);
+
+  useEffect(() => {
+    setMinutesSinceLastEnd(diffFromLastEndInMinutes(eintraege));
+    setMinutesCurrentOpen(diffForOpenEntryInMinutes(eintraege));
+
+    const interval = setInterval(() => {
+      setMinutesSinceLastEnd(diffFromLastEndInMinutes(eintraege));
+      setMinutesCurrentOpen(diffForOpenEntryInMinutes(eintraege));
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [eintraege]);
 
   const updateEintraege = useCallback(async (newEintraege: Eintrag[]) => {
     const sortedEintraege = [...newEintraege].sort((a, b) => b.id - a.id);
@@ -439,6 +506,7 @@ const App: React.FC = () => {
   ).sort().reverse();
 
   const openEntryInfo: OpenEntryInfo = getOpenEntryInfo(eintraege);
+  const hasOpenEntry = openEntryInfo.hasOpen;
 
   const toggleDate = (date: string) => {
     if (expandedDate === date) {
@@ -586,7 +654,6 @@ const App: React.FC = () => {
       const second = eintraege.find(e => e.id === existingSplit.secondId);
 
       if (!first || !second) {
-        // Fallback: wie bisher nur aktuellen bearbeiten
         newEintraege = eintraege.filter(e => e.id !== original.id);
         newSplits = splits.filter(s => s.id !== existingSplit.id);
 
@@ -613,13 +680,11 @@ const App: React.FC = () => {
         return;
       }
 
-      // beide Einträge des Splits entfernen
       newEintraege = eintraege.filter(
         e => e.id !== existingSplit.firstId && e.id !== existingSplit.secondId
       );
       newSplits = splits.filter(s => s.id !== existingSplit.id);
 
-      // gemeinsame Basis aus beiden Einträgen
       let base = buildBaseFromSplit(first, second);
 
       if (editMode === 'start') {
@@ -837,6 +902,25 @@ const App: React.FC = () => {
 
   return (
     <View style={styles.container}>
+      {/* Timer oben */}
+      <View style={styles.timerContainer}>
+        {hasOpenEntry ? (
+          <>
+            <Text style={styles.timerLabel}>Laufende Messung:</Text>
+            <Text style={styles.timerValue}>
+              {formatMinutesToDHm(minutesCurrentOpen)}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text style={styles.timerLabel}>Seit letztem Ende:</Text>
+            <Text style={styles.timerValue}>
+              {formatMinutesToDHm(minutesSinceLastEnd)}
+            </Text>
+          </>
+        )}
+      </View>
+
       {/* Header */}
       <View style={styles.headerRow}>
         <TouchableOpacity
@@ -922,12 +1006,30 @@ const App: React.FC = () => {
   );
 };
 
-
 const styles = StyleSheet.create({
   container: { 
     flex: 1, 
     padding: 20, 
     backgroundColor: '#2C1F15',
+  },
+  timerContainer: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    borderRadius: 8,
+    backgroundColor: '#3D2A1E',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  timerLabel: {
+    color: '#D9C4A8',
+    fontSize: 14,
+  },
+  timerValue: {
+    color: '#F8E8C8',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
   headerRow: {
     flexDirection: 'row',
