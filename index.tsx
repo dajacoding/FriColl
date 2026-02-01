@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
   Button,
   Pressable,
   ScrollView,
@@ -9,8 +10,9 @@ import {
   Text,
   TouchableOpacity,
   View,
-  useWindowDimensions
+  useWindowDimensions,
 } from 'react-native';
+
 
 // Types
 type Eintrag = {
@@ -33,9 +35,11 @@ type OpenEntryInfo = {
   id: number | null;
 };
 
+
 // Storage Keys
 const STORAGE_KEY_EINTRAEGE = '@zeit_erfassung_eintraege';
 const STORAGE_KEY_SPLITS = '@zeit_erfassung_splits';
+
 
 // Einfache ID-Erzeugung (stabiler als mehrfaches Date.now())
 let NEXT_ID = Date.now();
@@ -43,6 +47,7 @@ const generateId = () => {
   NEXT_ID += 1;
   return NEXT_ID;
 };
+
 
 // Utility Functions
 const getTodayDate = (): string => new Date().toISOString().split('T')[0];
@@ -138,6 +143,7 @@ const getOpenEntryInfo = (eintraege: Eintrag[]): OpenEntryInfo => {
   };
 };
 
+
 // Minuten seit letztem Ende-Eintrag (in 5er-Schritten)
 const diffFromLastEndInMinutes = (eintraege: Eintrag[]): number => {
   const finished = eintraege.filter(e => e.ende);
@@ -160,6 +166,7 @@ const diffFromLastEndInMinutes = (eintraege: Eintrag[]): number => {
   const diffMinutes = Math.floor(diffMs / 60000);
   return Math.round(diffMinutes / 5) * 5;
 };
+
 
 // Minuten für laufende Messung (offener Eintrag, in 5er-Schritten)
 const diffForOpenEntryInMinutes = (eintraege: Eintrag[]): number => {
@@ -197,6 +204,7 @@ const formatMinutesToDHm = (totalMinutes: number): string => {
   return parts.join(' ');
 };
 
+
 // Storage Functions
 const saveEintraege = async (eintraege: Eintrag[]) => {
   try {
@@ -233,6 +241,7 @@ const loadSplits = async (): Promise<SplitEntry[]> => {
     return [];
   }
 };
+
 
 // Business Logic – ERWEITERT für Split-Logik
 const createEntriesWithOptionalSplit = (base: Eintrag) => {
@@ -277,6 +286,7 @@ const createEntriesWithOptionalSplit = (base: Eintrag) => {
   return { entries: [first, second], split };
 };
 
+
 // Basis aus einem Split-Paar erstellen
 const buildBaseFromSplit = (
   first: Eintrag,
@@ -289,6 +299,7 @@ const buildBaseFromSplit = (
     ende: second.ende,
   };
 };
+
 
 // Components
 type SpoolButtonProps = { label: string; onStep: () => void };
@@ -445,6 +456,7 @@ const AuswertungView: React.FC<AuswertungProps> = ({ eintraege, splits }) => {
   );
 };
 
+
 // Main App Component
 const App: React.FC = () => {
   const todayDate = getTodayDate();
@@ -461,6 +473,9 @@ const App: React.FC = () => {
   const [minutesSinceLastEnd, setMinutesSinceLastEnd] = useState<number>(0);
   const [minutesCurrentOpen, setMinutesCurrentOpen] = useState<number>(0);
 
+  // ⬅️ AppState-Ref für Vordergrund/Hintergrund
+  const appState = useRef(AppState.currentState);
+
   useEffect(() => {
     const loadData = async () => {
       const savedEintraege = await loadEintraege();
@@ -474,16 +489,39 @@ const App: React.FC = () => {
     loadData();
   }, []);
 
+  // ⬅️ Recalc bei Änderungen UND per Intervall im Vordergrund
   useEffect(() => {
+    // sofort neu berechnen, wenn sich Einträge ändern
     setMinutesSinceLastEnd(diffFromLastEndInMinutes(eintraege));
     setMinutesCurrentOpen(diffForOpenEntryInMinutes(eintraege));
 
+    // alle 5 Minuten neu berechnen (solange App im Vordergrund ist)
     const interval = setInterval(() => {
       setMinutesSinceLastEnd(diffFromLastEndInMinutes(eintraege));
       setMinutesCurrentOpen(diffForOpenEntryInMinutes(eintraege));
     }, 5 * 60 * 1000);
 
     return () => clearInterval(interval);
+  }, [eintraege]);
+
+  // ⬅️ AppState-Listener: beim Zurückkehren in den Vordergrund neu berechnen
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (
+        appState.current.match(/inactive|background/) &&
+        nextState === 'active'
+      ) {
+        // Gerade wieder in den Vordergrund gekommen → Timer-Werte neu berechnen
+        setMinutesSinceLastEnd(diffFromLastEndInMinutes(eintraege));
+        setMinutesCurrentOpen(diffForOpenEntryInMinutes(eintraege));
+      }
+
+      appState.current = nextState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
   }, [eintraege]);
 
   const updateEintraege = useCallback(async (newEintraege: Eintrag[]) => {
@@ -524,6 +562,7 @@ const App: React.FC = () => {
     setEditingStart('');
     setEditingEnde('');
   };
+
 
   // --- Bearbeitungsfunktionen ---
 
@@ -781,6 +820,7 @@ const App: React.FC = () => {
     );
   };
 
+
   // --- Rendering-Funktionen ---
 
   const renderRow = ({ item }: { item: Eintrag }) => {
@@ -1005,6 +1045,7 @@ const App: React.FC = () => {
     </View>
   );
 };
+
 
 const styles = StyleSheet.create({
   container: { 
